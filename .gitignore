@@ -1,0 +1,12 @@
+﻿venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/
+*.dat
+*.hea
+*.apn
+*.qrs
+*.pth
+*.h5
+*.ipynb_checkpoints/
