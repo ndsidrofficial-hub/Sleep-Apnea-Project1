@@ -32,8 +32,20 @@ result = []
 for method in methods:
     C = confusion_matrix(all1["original"], all1[method], labels=(1, 0))
     TP, TN, FP, FN = C[0, 0], C[1, 1], C[1, 0], C[0, 1]
-    acc, sn, sp = 1. * (TP + TN) / (TP + TN + FP + FN), 1. * TP / (TP + FN), 1. * TN / (TN + FP)
+    acc, sn, sp = (
+        1.0 * (TP + TN) / (TP + TN + FP + FN),
+        1.0 * TP / (TP + FN),
+        1.0 * TN / (TN + FP),
+    )
     auc = roc_auc_score(all["original"] > 5, all[method])
-    result.append([method, acc * 100, sn * 100, sp * 100, auc, corr["original"][method]])
-np.savetxt(os.path.join(base_dir, "Table 2.csv"), result, fmt="%s", delimiter=",", comments="",
-           header="Method,Accuracy(%),Sensitivity(%),Specificity(%),AUC,Corr")
+    result.append(
+        [method, acc * 100, sn * 100, sp * 100, auc, corr["original"][method]]
+    )
+np.savetxt(
+    os.path.join(base_dir, "Table 2.csv"),
+    result,
+    fmt="%s",
+    delimiter=",",
+    comments="",
+    header="Method,Accuracy(%),Sensitivity(%),Specificity(%),AUC,Corr",
+)
