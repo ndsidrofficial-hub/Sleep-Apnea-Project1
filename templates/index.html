@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SE-MSCNN v2 | Sleep Apnea Detection</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0f172a; /* Slate 900 */
+            color: #f8fafc; /* Slate 50 */
+            background-image: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            min-height: 100vh;
+        }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        .gradient-text {
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .loader {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top: 3px solid #38bdf8;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="font-sans antialiased p-6 md:p-12">
+
+    <!-- Header -->
+    <header class="max-w-6xl mx-auto mb-12 text-center">
+        <h1 class="text-4xl md:text-5xl font-extrabold mb-4 tracking-tight">
+            Automated <span class="gradient-text">Sleep Apnea</span> Detection
+        </h1>
+        <p class="text-slate-400 text-lg max-w-2xl mx-auto">
+            Powered by an improved SE-MSCNN v2 PyTorch Architecture and XGBoost Ensemble. 
+            Analyze single-lead ECG segments in real-time.
+        </p>
+    </header>
+
+    <main class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        <!-- Left Column: Single ECG Inference -->
+        <div class="lg:col-span-5 glass-panel rounded-2xl p-8 transition-transform hover:scale-[1.01] duration-300">
+            <h2 class="text-2xl font-bold mb-6 flex items-center">
+                <i class="fas fa-heartbeat text-sky-400 mr-3"></i> Analyze Patient ECG
+            </h2>
+            
+            <form id="uploadForm" class="space-y-6">
+                <div class="border-2 border-dashed border-slate-600 rounded-xl p-8 text-center hover:bg-slate-800/50 transition cursor-pointer" onclick="document.getElementById('fileInput').click()">
+                    <i class="fas fa-cloud-upload-alt text-4xl text-slate-400 mb-3 text-sky-400"></i>
+                    <p class="text-sm text-slate-300 mb-1 font-medium">Click to select an ECG file</p>
+                    <p class="text-xs text-slate-500">.dat, .txt, .csv formats supported</p>
+                    <input type="file" id="fileInput" name="file" class="hidden" onchange="fileSelected()">
+                </div>
+                <div id="fileDisplay" class="hidden text-sm text-sky-300 bg-sky-900/30 p-3 rounded-lg flex items-center justify-between">
+                    <span id="fileName"></span>
+                    <i class="fas fa-check-circle"></i>
+                </div>
+                
+                <button type="submit" id="analyzeBtn" class="w-full bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all transform active:scale-95 disabled:opacity-50 flex items-center justify-center">
+                    <span id="btnText">Analyze Segment</span>
+                    <div id="btnLoader" class="loader ml-3 hidden"></div>
+                </button>
+            </form>
+
+            <!-- Inference Result Area -->
+            <div id="resultArea" class="mt-8 hidden">
+                <h3 class="text-sm uppercase tracking-wider text-slate-400 font-semibold mb-3">Analysis Result</h3>
+                <div id="resultCard" class="p-5 rounded-xl border border-slate-700 bg-slate-800/50 relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-1 h-full" id="resultBorder"></div>
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-slate-300">Diagnosis</span>
+                        <span id="resDiagnosis" class="font-bold text-xl">--</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-slate-300">Model Confidence</span>
+                        <span id="resConfidence" class="font-mono bg-slate-900 px-2 py-1 rounded text-sm">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Benchmark Dashboard -->
+        <div class="lg:col-span-7 glass-panel rounded-2xl p-8 relative overflow-hidden">
+            <!-- Background Decoration -->
+            <div class="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
+            
+            <div class="flex justify-between items-start mb-6 align-middle">
+                <div>
+                    <h2 class="text-2xl font-bold flex items-center">
+                        <i class="fas fa-chart-network text-indigo-400 mr-3"></i> Test Set Benchmark
+                    </h2>
+                    <p class="text-sm text-slate-400 mt-1">Run exhaustive validation on 17,075 distinct ECG segments.</p>
+                </div>
+                <button id="benchmarkBtn" onclick="runBenchmark()" class="bg-indigo-600/80 hover:bg-indigo-500 text-white font-semibold py-2 px-6 rounded-lg border border-indigo-400/30 transition-colors flex items-center shadow-[0_0_15px_rgba(79,70,229,0.3)]">
+                    <i class="fas fa-play mr-2 text-xs"></i> Execute
+                </button>
+            </div>
+
+            <!-- Benchmark Loading State -->
+            <div id="benchLoading" class="hidden py-16 text-center">
+                <div class="inline-block relative w-16 h-16 mb-4">
+                    <div class="absolute inset-0 border-4 border-slate-700 border-t-indigo-500 rounded-full animate-spin"></div>
+                </div>
+                <p class="text-indigo-300 font-medium animate-pulse">Running CNN + XGBoost Inference (17,075 segments)...</p>
+                <p class="text-xs text-slate-500 mt-2">Loading weights.v2_improved.pt (94.75%) into VRAM</p>
+            </div>
+
+            <!-- Benchmark Results -->
+            <div id="benchResults" class="hidden space-y-6">
+                <!-- Metrics Grid -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700/50">
+                        <p class="text-xs text-slate-400 uppercase font-semibold mb-1">Accuracy</p>
+                        <p id="metAcc" class="text-2xl font-bold text-white">--</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700/50">
+                        <p class="text-xs text-slate-400 uppercase font-semibold mb-1">AUC-ROC</p>
+                        <p id="metAuc" class="text-2xl font-bold text-emerald-400">--</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700/50">
+                        <p class="text-xs text-slate-400 uppercase font-semibold mb-1">Sensitivity</p>
+                        <p id="metSens" class="text-2xl font-bold text-white">--</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700/50">
+                        <p class="text-xs text-slate-400 uppercase font-semibold mb-1">Specificity</p>
+                        <p id="metSpec" class="text-2xl font-bold text-white">--</p>
+                    </div>
+                </div>
+
+                <!-- Plot Area -->
+                <div class="bg-[#0b101e] rounded-xl border border-slate-700 overflow-hidden shadow-inner p-2">
+                    <div class="text-center py-2 border-b border-slate-800 mb-2">
+                        <span class="text-xs text-slate-500 uppercase tracking-widest font-bold">Matplotlib Graphics Pipeline</span>
+                    </div>
+                    <img id="benchImage" src="" alt="Benchmark Plots" class="w-full h-auto rounded opacity-0 transition-opacity duration-1000 ease-in">
+                </div>
+            </div>
+            
+            <div id="benchEmpty" class="py-20 text-center border-2 border-dashed border-slate-700/50 rounded-xl mt-4">
+                 <i class="fas fa-chart-area text-5xl text-slate-600 mb-4"></i>
+                 <p class="text-slate-500">Benchmark results will appear here</p>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        // Upload form logic
+        function fileSelected() {
+            const file = document.getElementById('fileInput').files[0];
+            if(file) {
+                document.getElementById('fileDisplay').classList.remove('hidden');
+                document.getElementById('fileName').innerText = file.name;
+            }
+        }
+
+        document.getElementById('uploadForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('fileInput');
+            if(fileInput.files.length === 0) return alert("Select a file first");
+
+            const btnText = document.getElementById('btnText');
+            const btnLoader = document.getElementById('btnLoader');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const resultArea = document.getElementById('resultArea');
+            const resultCard = document.getElementById('resultCard');
+            
+            analyzeBtn.disabled = true;
+            btnText.innerText = "Processing...";
+            btnLoader.classList.remove('hidden');
+            resultArea.classList.add('hidden');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const res = await fetch('/upload_ecg', { method: 'POST', body: formData });
+                const data = await res.json();
+                
+                document.getElementById('resDiagnosis').innerText = data.result;
+                document.getElementById('resConfidence').innerText = data.confidence;
+                
+                // Styling based on result
+                const border = document.getElementById('resultBorder');
+                if(data.result.includes("Apnea")) {
+                    document.getElementById('resDiagnosis').className = "font-bold text-xl text-rose-400";
+                    border.className = "absolute top-0 left-0 w-1 h-full bg-rose-500";
+                    resultCard.className = "p-5 rounded-xl border border-rose-900/50 bg-rose-950/20 relative overflow-hidden";
+                } else {
+                    document.getElementById('resDiagnosis').className = "font-bold text-xl text-emerald-400";
+                    border.className = "absolute top-0 left-0 w-1 h-full bg-emerald-500";
+                    resultCard.className = "p-5 rounded-xl border border-emerald-900/50 bg-emerald-950/20 relative overflow-hidden";
+                }
+                
+                resultArea.classList.remove('hidden');
+            } catch (err) {
+                alert("Error during analysis");
+            } finally {
+                analyzeBtn.disabled = false;
+                btnText.innerText = "Analyze Segment";
+                btnLoader.classList.add('hidden');
+            }
+        };
+
+        // Benchmark logic
+        async function runBenchmark() {
+            const btn = document.getElementById('benchmarkBtn');
+            const empty = document.getElementById('benchEmpty');
+            const loading = document.getElementById('benchLoading');
+            const results = document.getElementById('benchResults');
+            const img = document.getElementById('benchImage');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2 text-xs"></i> Running...';
+            btn.classList.replace('bg-indigo-600/80', 'bg-slate-700');
+            
+            empty.classList.add('hidden');
+            results.classList.add('hidden');
+            loading.classList.remove('hidden');
+            img.style.opacity = '0';
+            
+            try {
+                const res = await fetch('/run_benchmark', { method: 'POST' });
+                const data = await res.json();
+                
+                document.getElementById('metAcc').innerText = data.accuracy;
+                document.getElementById('metAuc').innerText = data.auc;
+                document.getElementById('metSens').innerText = data.sensitivity;
+                document.getElementById('metSpec').innerText = data.specificity;
+                
+                // Add timestamp to foil caching
+                img.src = data.image_url + "?t=" + new Date().getTime();
+                
+                img.onload = () => {
+                    loading.classList.add('hidden');
+                    results.classList.remove('hidden');
+                    setTimeout(() => { img.style.opacity = '1'; }, 100);
+                }
+            } catch (err) {
+                alert("Benchmark failed.");
+                loading.classList.add('hidden');
+                empty.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-check-circle mr-2 text-xs text-emerald-400"></i> Completed';
+            }
+        }
+    </script>
+</body>
+</html>
