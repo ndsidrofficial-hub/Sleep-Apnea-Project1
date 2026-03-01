@@ -1,0 +1,14 @@
+SE-MSCNN WITH REAL SPO2 - ROBUST VERSION V2
+======================================================================
+
+FINAL RESULTS (Threshold: 0.5000)
+======================================================================
+Accuracy:    0.6874
+Sensitivity: 0.0749
+Specificity: 0.9161
+F1-score:    0.1153
+AUC-ROC:     0.5921
+
+vs Baseline (89%):
+  Change: -20.3%
+  Status: NEEDS IMPROVEMENT
