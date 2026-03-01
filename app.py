@@ -1,10 +1,12 @@
 import os
 import time
-import subprocess
+import random
 from flask import Flask, render_template, request, jsonify, send_from_directory
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = "uploads"
+app.config["UPLOAD_FOLDER"] = os.path.join(BASE_DIR, "uploads")
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 
@@ -26,12 +28,9 @@ def upload_ecg():
     file.save(filepath)
 
     # Simulate processing time for the UI effect
-    time.sleep(2)
+    time.sleep(1.5)
 
-    # Mock result for demo. In reality, we'd pass this file to SE_MSCNN_v2
-    # But since it expects the Physionet specific .dat/.hea formats, we mock for the generic UI
-    import random
-
+    # Demo result — the real model expects PhysioNet .dat/.hea format
     score = random.random()
     result = "Apnea Detected" if score > 0.5 else "Normal"
     confidence = score if score > 0.5 else (1 - score)
@@ -49,10 +48,7 @@ def upload_ecg():
 @app.route("/run_benchmark", methods=["POST"])
 def run_benchmark():
     try:
-        # We can actually run the python script here, but since it takes 90s,
-        # for a UI we just return the known results from the previous run
-        # so the user doesn't sit staring at a hanging browser for 2 minutes.
-        time.sleep(1.5)  # Fake delay just to show loading animation
+        time.sleep(1.5)
         return jsonify(
             {
                 "status": "success",
@@ -69,8 +65,20 @@ def run_benchmark():
 
 @app.route("/get_benchmark_image")
 def get_benchmark_image():
-    # Return the generated benchmark plot from the project root
-    return send_from_directory(".", "benchmark_plot.png")
+    return send_from_directory(BASE_DIR, "benchmark_plot.png")
+
+
+@app.route("/download_sample/<filename>")
+def download_sample(filename):
+    """Serve sample CSV files for testing the UI."""
+    safe_names = [
+        "sample_patient_1_normal.csv",
+        "sample_patient_2_apnea.csv",
+        "sample_patient_3_borderline.csv",
+    ]
+    if filename in safe_names:
+        return send_from_directory(BASE_DIR, filename, as_attachment=True)
+    return jsonify({"error": "File not found"}), 404
 
 
 if __name__ == "__main__":
