@@ -55,7 +55,7 @@ class ResultsComparer:
         spo2_broken = self.results.get('SPO2_Broken', None)
         improved = self.results.get('Improved', None)
         
-        if not all([baseline, spo2_broken, improved]):
+        if baseline is None or spo2_broken is None or improved is None:
             print("⚠️  Not all results loaded. Loading from disk...")
             
             # Load from CSV files
@@ -85,8 +85,8 @@ class ResultsComparer:
         
         for name, df in self.results.items():
             y_true = df['y_true'].values
-            y_pred = df['y_pred'].values
-            y_score = df['y_score'].values if 'y_score' in df.columns else np.zeros_like(y_pred)
+            y_score = df['y_score'].values if 'y_score' in df.columns else np.zeros_like(y_true)
+            y_pred = df['y_pred'].values if 'y_pred' in df.columns else (y_score > 0.5).astype(int)
             
             metrics = self.compute_metrics(y_true, y_pred, y_score)
             metrics['Model'] = name
@@ -178,7 +178,7 @@ class ResultsComparer:
         
         for name, df in self.results.items():
             y_true = df['y_true'].values
-            y_pred = df['y_pred'].values
+            y_pred = df['y_pred'].values if 'y_pred' in df.columns else (df['y_score'].values > 0.5).astype(int)
             
             # False negatives (missed apnea) - most dangerous
             false_negatives = (y_true == 1) & (y_pred == 0)
