@@ -54,7 +54,11 @@ def generate_document():
     doc.add_paragraph('\n' * 2)
     author = doc.add_paragraph()
     author.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = author.add_run('Expanded Edition: Complete Chronological Report (Baseline to 95%)')
+    run = author.add_run('Expanded Edition: Complete Chronological Report (Baseline to 95%)\n\n'
+                         'Dr. M Poornima Devi (Assistant Prof)\n'
+                         'K Nikki Dravid Siddhartha Rai (BSc Data Science)\n'
+                         'Kavin Mohan (BSc Data Science)\n'
+                         'Ahaan Prita Kumar (BSc Data Science)')
     run.font.size = Pt(14)
     run.font.name = 'Arial'
     
@@ -151,7 +155,7 @@ def generate_document():
             add_paragraph(doc, "Extended theoretical discussion covering the intricacies of deep learning application to physiological time series. " * 60)
         doc.add_page_break()
 
-    doc.save('Expanded_Massive_Documentation.docx')
+    doc.save('Comprehensive_SE_MSCNN_Architecture_Report.docx')
     print("Expanded documentation generation complete (with image embedded).")
 
 if __name__ == '__main__':
