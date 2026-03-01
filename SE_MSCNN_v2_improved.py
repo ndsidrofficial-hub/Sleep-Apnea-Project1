@@ -18,6 +18,7 @@ import pandas as pd
 import random
 import math
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import torch
@@ -27,9 +28,13 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 
 # ======================== CONFIG ========================
-BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apnea-ecg-database-1.0.0")
+BASE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "apnea-ecg-database-1.0.0"
+)
 DATASET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
-PICKLE_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preprocessed_data.pkl")
+PICKLE_CACHE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "preprocessed_data.pkl"
+)
 WEIGHTS_SAVE = "weights.v2_improved.pt"
 PREDICTIONS_CSV = "SE_MSCNN_v2_predictions.csv"
 
@@ -63,17 +68,79 @@ def load_data():
     sample = fs * 60
 
     train_names = [
-        "a01", "a02", "a03", "a04", "a05", "a06", "a07", "a08", "a09", "a10",
-        "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20",
-        "b01", "b02", "b03", "b04", "b05",
-        "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10"
+        "a01",
+        "a02",
+        "a03",
+        "a04",
+        "a05",
+        "a06",
+        "a07",
+        "a08",
+        "a09",
+        "a10",
+        "a11",
+        "a12",
+        "a13",
+        "a14",
+        "a15",
+        "a16",
+        "a17",
+        "a18",
+        "a19",
+        "a20",
+        "b01",
+        "b02",
+        "b03",
+        "b04",
+        "b05",
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
     ]
 
     test_names = [
-        "x01", "x02", "x03", "x04", "x05", "x06", "x07", "x08", "x09", "x10",
-        "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20",
-        "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30",
-        "x31", "x32", "x33", "x34", "x35"
+        "x01",
+        "x02",
+        "x03",
+        "x04",
+        "x05",
+        "x06",
+        "x07",
+        "x08",
+        "x09",
+        "x10",
+        "x11",
+        "x12",
+        "x13",
+        "x14",
+        "x15",
+        "x16",
+        "x17",
+        "x18",
+        "x19",
+        "x20",
+        "x21",
+        "x22",
+        "x23",
+        "x24",
+        "x25",
+        "x26",
+        "x27",
+        "x28",
+        "x29",
+        "x30",
+        "x31",
+        "x32",
+        "x33",
+        "x34",
+        "x35",
     ]
 
     # Load answers for test set
@@ -93,7 +160,9 @@ def load_data():
         X1, X2, X3, Y, G = [], [], [], [], []
 
         try:
-            signals = wfdb.rdrecord(os.path.join(data_dir, name), channels=[0]).p_signal[:, 0]
+            signals = wfdb.rdrecord(
+                os.path.join(data_dir, name), channels=[0]
+            ).p_signal[:, 0]
         except Exception as e:
             print(f"  Could not load {name}: {e}")
             return X1, X2, X3, Y, G
@@ -102,16 +171,22 @@ def load_data():
             if j < BEFORE or (j + 1 + AFTER) > len(signals) / float(sample):
                 continue
 
-            signal = signals[int((j - BEFORE) * sample):int((j + 1 + AFTER) * sample)]
+            signal = signals[int((j - BEFORE) * sample) : int((j + 1 + AFTER) * sample)]
 
             try:
                 signal, _, _ = st.filter_signal(
-                    signal, ftype='FIR', band='bandpass',
-                    order=int(0.3 * fs), frequency=[3, 45], sampling_rate=fs
+                    signal,
+                    ftype="FIR",
+                    band="bandpass",
+                    order=int(0.3 * fs),
+                    frequency=[3, 45],
+                    sampling_rate=fs,
                 )
 
-                rpeaks, = hamilton_segmenter(signal, sampling_rate=fs)
-                rpeaks, = correct_rpeaks(signal, rpeaks=rpeaks, sampling_rate=fs, tol=0.1)
+                (rpeaks,) = hamilton_segmenter(signal, sampling_rate=fs)
+                (rpeaks,) = correct_rpeaks(
+                    signal, rpeaks=rpeaks, sampling_rate=fs, tol=0.1
+                )
 
                 if len(rpeaks) < 2:
                     continue
@@ -124,12 +199,18 @@ def load_data():
 
                 # Spline interpolation
                 rri_interp = splev(TM, splrep(rri_tm_vals, scale_fn(rri), k=3), ext=1)
-                ampl_interp = splev(TM, splrep(ampl_tm_vals, scale_fn(ampl), k=3), ext=1)
+                ampl_interp = splev(
+                    TM, splrep(ampl_tm_vals, scale_fn(ampl), k=3), ext=1
+                )
 
-                X1.append([rri_interp, ampl_interp])                # 5-min: (2, 900)
-                X2.append([rri_interp[180:720], ampl_interp[180:720]])  # 3-min: (2, 540)
-                X3.append([rri_interp[360:540], ampl_interp[360:540]])  # 1-min: (2, 180)
-                Y.append(0. if labels[j] == 'N' else 1.)
+                X1.append([rri_interp, ampl_interp])  # 5-min: (2, 900)
+                X2.append(
+                    [rri_interp[180:720], ampl_interp[180:720]]
+                )  # 3-min: (2, 540)
+                X3.append(
+                    [rri_interp[360:540], ampl_interp[360:540]]
+                )  # 1-min: (2, 180)
+                Y.append(0.0 if labels[j] == "N" else 1.0)
                 G.append(name)
             except Exception:
                 continue
@@ -168,7 +249,9 @@ def load_data():
             if name in answers:
                 labels = answers[name]
             else:
-                labels = wfdb.rdann(os.path.join(BASE_DIR, name), extension="apn").symbol
+                labels = wfdb.rdann(
+                    os.path.join(BASE_DIR, name), extension="apn"
+                ).symbol
         except Exception as e:
             print(f"  Skipping {name}: {e}")
             continue
@@ -199,16 +282,24 @@ def load_data():
     train_idx, val_idx = indices[:split], indices[split:]
 
     data = {
-        'x_train1': x_all1[train_idx], 'x_train2': x_all2[train_idx], 'x_train3': x_all3[train_idx],
-        'y_train': y_all[train_idx],
-        'x_val1': x_all1[val_idx], 'x_val2': x_all2[val_idx], 'x_val3': x_all3[val_idx],
-        'y_val': y_all[val_idx],
-        'x_test1': to_arrays(o_test1), 'x_test2': to_arrays(o_test2), 'x_test3': to_arrays(o_test3),
-        'y_test': np.array(y_test, dtype="float32"),
-        'groups_test': groups_test,
+        "x_train1": x_all1[train_idx],
+        "x_train2": x_all2[train_idx],
+        "x_train3": x_all3[train_idx],
+        "y_train": y_all[train_idx],
+        "x_val1": x_all1[val_idx],
+        "x_val2": x_all2[val_idx],
+        "x_val3": x_all3[val_idx],
+        "y_val": y_all[val_idx],
+        "x_test1": to_arrays(o_test1),
+        "x_test2": to_arrays(o_test2),
+        "x_test3": to_arrays(o_test3),
+        "y_test": np.array(y_test, dtype="float32"),
+        "groups_test": groups_test,
     }
 
-    print(f"\nTrain: {data['x_train1'].shape[0]}, Val: {data['x_val1'].shape[0]}, Test: {data['x_test1'].shape[0]}")
+    print(
+        f"\nTrain: {data['x_train1'].shape[0]}, Val: {data['x_val1'].shape[0]}, Test: {data['x_test1'].shape[0]}"
+    )
     print(f"Train apnea rate: {np.mean(data['y_train']):.2%}")
     print(f"Test apnea rate: {np.mean(data['y_test']):.2%}")
 
@@ -250,6 +341,7 @@ class ApneaDataset(Dataset):
 # ======================== MODEL ========================
 class ResidualConvBlock(nn.Module):
     """1D Residual Convolution Block with BatchNorm."""
+
     def __init__(self, in_ch, out_ch, kernel=7):
         super().__init__()
         pad = kernel // 2
@@ -261,8 +353,7 @@ class ResidualConvBlock(nn.Module):
         self.shortcut = nn.Identity()
         if in_ch != out_ch:
             self.shortcut = nn.Sequential(
-                nn.Conv1d(in_ch, out_ch, 1),
-                nn.BatchNorm1d(out_ch)
+                nn.Conv1d(in_ch, out_ch, 1), nn.BatchNorm1d(out_ch)
             )
 
     def forward(self, x):
@@ -274,12 +365,11 @@ class ResidualConvBlock(nn.Module):
 
 class Branch(nn.Module):
     """One scale branch with deep residual blocks."""
+
     def __init__(self, in_channels=2):
         super().__init__()
         self.initial = nn.Sequential(
-            nn.Conv1d(in_channels, 32, 11, padding=5),
-            nn.BatchNorm1d(32),
-            nn.ReLU()
+            nn.Conv1d(in_channels, 32, 11, padding=5), nn.BatchNorm1d(32), nn.ReLU()
         )
         self.block1 = ResidualConvBlock(32, 32, kernel=7)
         self.pool1 = nn.MaxPool1d(2)
@@ -316,6 +406,7 @@ class Branch(nn.Module):
 
 class ImprovedSEMSCNN(nn.Module):
     """SE-MSCNN v2 with deeper residual branches and improved SE attention."""
+
     def __init__(self):
         super().__init__()
         self.branch1 = Branch(2)  # 5-min
@@ -329,7 +420,7 @@ class ImprovedSEMSCNN(nn.Module):
             nn.Linear(total_ch, total_ch // 4),
             nn.ReLU(),
             nn.Linear(total_ch // 4, total_ch),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
         # Classification head
@@ -388,7 +479,7 @@ class FocalLoss(nn.Module):
         pt = (probs * targets_onehot).sum(dim=1)
         focal_weight = (1 - pt) ** self.gamma
 
-        ce = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
+        ce = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
         loss = focal_weight * ce
         return loss.mean()
 
@@ -434,8 +525,13 @@ def evaluate(model, loader, criterion):
             all_preds.append(logits.argmax(1).cpu().numpy())
             all_true.append(y.cpu().numpy())
 
-    return (total_loss / total, correct / total,
-            np.concatenate(all_probs), np.concatenate(all_preds), np.concatenate(all_true))
+    return (
+        total_loss / total,
+        correct / total,
+        np.concatenate(all_probs),
+        np.concatenate(all_preds),
+        np.concatenate(all_true),
+    )
 
 
 def extract_features(model, loader):
@@ -464,33 +560,48 @@ if __name__ == "__main__":
     print("\n[1/5] Loading and preprocessing data...")
     if os.path.exists(PICKLE_CACHE):
         print(f"  Loading cached data from {PICKLE_CACHE}...")
-        with open(PICKLE_CACHE, 'rb') as f:
+        with open(PICKLE_CACHE, "rb") as f:
             data = pickle.load(f)
-        print(f"  Train: {data['x_train1'].shape[0]}, Val: {data['x_val1'].shape[0]}, Test: {data['x_test1'].shape[0]}")
+        print(
+            f"  Train: {data['x_train1'].shape[0]}, Val: {data['x_val1'].shape[0]}, Test: {data['x_test1'].shape[0]}"
+        )
     else:
         data = load_data()
         print(f"  Saving preprocessed data to {PICKLE_CACHE}...")
-        with open(PICKLE_CACHE, 'wb') as f:
+        with open(PICKLE_CACHE, "wb") as f:
             pickle.dump(data, f, protocol=4)
         print(f"  Cached! Next run will load instantly.")
 
     # Datasets and loaders
-    train_ds = ApneaDataset(data['x_train1'], data['x_train2'], data['x_train3'],
-                            data['y_train'], augment=True)
-    val_ds = ApneaDataset(data['x_val1'], data['x_val2'], data['x_val3'],
-                          data['y_val'], augment=False)
-    test_ds = ApneaDataset(data['x_test1'], data['x_test2'], data['x_test3'],
-                           data['y_test'], augment=False)
+    train_ds = ApneaDataset(
+        data["x_train1"],
+        data["x_train2"],
+        data["x_train3"],
+        data["y_train"],
+        augment=True,
+    )
+    val_ds = ApneaDataset(
+        data["x_val1"], data["x_val2"], data["x_val3"], data["y_val"], augment=False
+    )
+    test_ds = ApneaDataset(
+        data["x_test1"], data["x_test2"], data["x_test3"], data["y_test"], augment=False
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    train_loader = DataLoader(
+        train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0
+    )
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    test_loader = DataLoader(
+        test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0
+    )
 
     # Class weights for focal loss
-    n_apnea = np.sum(data['y_train'] == 1)
-    n_normal = np.sum(data['y_train'] == 0)
-    total = len(data['y_train'])
-    class_weights = torch.tensor([total / (2 * n_normal), total / (2 * n_apnea)], dtype=torch.float32).to(DEVICE)
+    n_apnea = np.sum(data["y_train"] == 1)
+    n_normal = np.sum(data["y_train"] == 0)
+    total = len(data["y_train"])
+    class_weights = torch.tensor(
+        [total / (2 * n_normal), total / (2 * n_apnea)], dtype=torch.float32
+    ).to(DEVICE)
     print(f"Class weights: Normal={class_weights[0]:.3f}, Apnea={class_weights[1]:.3f}")
 
     # --- Build Model ---
@@ -501,7 +612,9 @@ if __name__ == "__main__":
 
     criterion = FocalLoss(gamma=2.0, alpha=class_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=30, T_mult=2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=30, T_mult=2
+    )
 
     # --- Train ---
     print("\n[3/5] Training model...")
@@ -514,13 +627,15 @@ if __name__ == "__main__":
         val_loss, val_acc, _, _, _ = evaluate(model, val_loader, criterion)
         scheduler.step()
 
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
 
         if epoch % 5 == 0 or epoch == 1:
-            print(f"Epoch {epoch:3d}/{EPOCHS} | "
-                  f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-                  f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} | "
-                  f"LR: {current_lr:.2e}")
+            print(
+                f"Epoch {epoch:3d}/{EPOCHS} | "
+                f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
+                f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} | "
+                f"LR: {current_lr:.2e}"
+            )
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -551,9 +666,16 @@ if __name__ == "__main__":
         from xgboost import XGBClassifier
 
         # No augmentation for feature extraction
-        train_noaug_ds = ApneaDataset(data['x_train1'], data['x_train2'], data['x_train3'],
-                                      data['y_train'], augment=False)
-        train_noaug_loader = DataLoader(train_noaug_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+        train_noaug_ds = ApneaDataset(
+            data["x_train1"],
+            data["x_train2"],
+            data["x_train3"],
+            data["y_train"],
+            augment=False,
+        )
+        train_noaug_loader = DataLoader(
+            train_noaug_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0
+        )
 
         feat_train, y_tr = extract_features(model, train_noaug_loader)
         feat_val, y_v = extract_features(model, val_loader)
@@ -567,10 +689,10 @@ if __name__ == "__main__":
             subsample=0.8,
             colsample_bytree=0.8,
             scale_pos_weight=scale_pos,
-            eval_metric='logloss',
+            eval_metric="logloss",
             early_stopping_rounds=30,
             random_state=SEED,
-            verbosity=0
+            verbosity=0,
         )
 
         xgb.fit(feat_train, y_tr, eval_set=[(feat_val, y_v)], verbose=False)
@@ -624,13 +746,15 @@ if __name__ == "__main__":
         print(f"  AUC-ROC:     {auc:.4f}")
 
     # Save best predictions (ensemble)
-    output = pd.DataFrame({
-        "y_true": y_true,
-        "y_pred": ensemble_preds,
-        "y_score": ensemble_probs,
-        "y_score_cnn": cnn_probs,
-        "subject": data['groups_test']
-    })
+    output = pd.DataFrame(
+        {
+            "y_true": y_true,
+            "y_pred": ensemble_preds,
+            "y_score": ensemble_probs,
+            "y_score_cnn": cnn_probs,
+            "subject": data["groups_test"],
+        }
+    )
     if has_xgb:
         output["y_score_xgb"] = xgb_probs
     output.to_csv(PREDICTIONS_CSV, index=False)
