@@ -31,7 +31,10 @@ run.font.name = 'Times New Roman'
 # ---- Authors ----
 authors = doc.add_paragraph()
 authors.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run = authors.add_run('Sleep Apnea Detection Project')
+run = authors.add_run('Dr. M Poornima Devi (Assistant Prof)\n'
+                      'K Nikki Dravid Siddhartha Rai (BSc Data Science)\n'
+                      'Kavin Mohan (BSc Data Science)\n'
+                      'Ahaan Prita Kumar (BSc Data Science)')
 run.font.size = Pt(11)
 run.font.name = 'Times New Roman'
 
@@ -324,5 +327,5 @@ for ref in refs:
         run.font.size = Pt(9)
         run.font.name = 'Times New Roman'
 
-doc.save('model_evaluation_report.docx')
-print("IEEE-formatted report saved to model_evaluation_report.docx")
+doc.save('IEEE_SE_MSCNN_Sleep_Apnea_Report.docx')
+print("IEEE-formatted report saved to IEEE_SE_MSCNN_Sleep_Apnea_Report.docx")
