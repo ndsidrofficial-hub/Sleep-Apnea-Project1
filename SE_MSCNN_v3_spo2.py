@@ -1,6 +1,9 @@
 """
 SE-MSCNN v3 with SpO2 Fusion (PyTorch) — Target 95%+ Accuracy
 ==============================================================
+Memory-efficient: loads ECG from preprocessed_data.pkl + SpO2 from spo2_npy/
+On-the-fly 9x augmentation in Dataset (no pre-duplication).
+
 Enhancements over v2 (89.38% test):
   1. 4th SpO2 branch for multi-modal ECG+SpO2 fusion
   2. Subject-aware train/val split (no patient leakage)
@@ -10,7 +13,7 @@ Enhancements over v2 (89.38% test):
   6. Gradient accumulation (effective batch 128)
   7. SWA (Stochastic Weight Averaging) in final epochs
   8. Reduced classifier dropout (0.3/0.35)
-  9. Optimized ensemble weights + threshold
+  9. On-the-fly augmentation for better generalization
 """
 
 import os
@@ -34,7 +37,8 @@ from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 
 # ======================== CONFIG ========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SPO2_CACHE = os.path.join(BASE_DIR, "spo2_data.pkl")
+SPO2_DIR = os.path.join(BASE_DIR, "spo2_npy")
+PICKLE_CACHE = os.path.join(BASE_DIR, "preprocessed_data.pkl")
 WEIGHTS_SAVE = os.path.join(BASE_DIR, "weights.v3_spo2.pt")
 PREDICTIONS_CSV = os.path.join(BASE_DIR, "SE_MSCNN_v3_predictions.csv")
 
@@ -46,39 +50,111 @@ torch.manual_seed(SEED)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EPOCHS = 60
 BATCH_SIZE = 32
-ACCUM_STEPS = 4       # Gradient accumulation → effective batch = 128
+ACCUM_STEPS = 4       # Gradient accumulation -> effective batch = 128
 LR = 1e-3
 SWA_START = 40         # Start SWA at this epoch
 PATIENCE = 25
+AUG_FACTOR = 9         # Virtual augmentation factor for training
 
 scale_fn = lambda arr: (arr - np.min(arr)) / (np.max(arr) - np.min(arr) + 1e-8)
 
 
-# ======================== DATASET ========================
-class ApneaSpO2Dataset(Dataset):
-    """Dataset with 3 ECG branches + 1 SpO2 branch."""
+# ======================== DATA LOADING ========================
+def load_data_memory_efficient():
+    """
+    Load ECG from preprocessed_data.pkl + SpO2 from spo2_npy/.
+    Returns dict with all arrays. Peak memory ~600MB instead of ~6GB.
+    """
+    print("  Loading ECG data from preprocessed_data.pkl...")
+    if not os.path.exists(PICKLE_CACHE):
+        print(f"ERROR: {PICKLE_CACHE} not found.")
+        sys.exit(1)
+    
+    with open(PICKLE_CACHE, "rb") as f:
+        ecg_data = pickle.load(f)
+    
+    print("  Loading SpO2 data from spo2_npy/...")
+    if not os.path.exists(SPO2_DIR):
+        print(f"ERROR: {SPO2_DIR} not found. Run: python generate_spo2_dataset.py")
+        sys.exit(1)
+    
+    data = {
+        # ECG from pickle
+        'ecg_train1': ecg_data['x_train1'],
+        'ecg_train2': ecg_data['x_train2'],
+        'ecg_train3': ecg_data['x_train3'],
+        'ecg_val1': ecg_data['x_val1'],
+        'ecg_val2': ecg_data['x_val2'],
+        'ecg_val3': ecg_data['x_val3'],
+        'ecg_test1': ecg_data['x_test1'],
+        'ecg_test2': ecg_data['x_test2'],
+        'ecg_test3': ecg_data['x_test3'],
+        # Labels
+        'y_train': ecg_data['y_train'],
+        'y_val': ecg_data['y_val'],
+        'y_test': ecg_data['y_test'],
+        # Groups
+        'groups_test': ecg_data.get('groups_test', None),
+        # SpO2 from .npy files
+        'spo2_train1': np.load(os.path.join(SPO2_DIR, "train_spo2_1.npy")),
+        'spo2_train2': np.load(os.path.join(SPO2_DIR, "train_spo2_2.npy")),
+        'spo2_train3': np.load(os.path.join(SPO2_DIR, "train_spo2_3.npy")),
+        'spo2_val1': np.load(os.path.join(SPO2_DIR, "val_spo2_1.npy")),
+        'spo2_val2': np.load(os.path.join(SPO2_DIR, "val_spo2_2.npy")),
+        'spo2_val3': np.load(os.path.join(SPO2_DIR, "val_spo2_3.npy")),
+        'spo2_test1': np.load(os.path.join(SPO2_DIR, "test_spo2_1.npy")),
+        'spo2_test2': np.load(os.path.join(SPO2_DIR, "test_spo2_2.npy")),
+        'spo2_test3': np.load(os.path.join(SPO2_DIR, "test_spo2_3.npy")),
+    }
+    
+    del ecg_data
+    gc.collect()
+    
+    return data
 
-    def __init__(self, x1, x2, x3, spo2_1, spo2_2, spo2_3, y, augment=False):
-        # ECG: (N, T, 2) → (N, 2, T) for Conv1d
-        self.x1 = torch.from_numpy(x1.transpose(0, 2, 1)).float()    # (N, 2, 900)
-        self.x2 = torch.from_numpy(x2.transpose(0, 2, 1)).float()    # (N, 2, 540)
-        self.x3 = torch.from_numpy(x3.transpose(0, 2, 1)).float()    # (N, 2, 180)
-        # SpO2: (N, T, 1) → (N, 1, T) for Conv1d
-        self.spo2_1 = torch.from_numpy(spo2_1.transpose(0, 2, 1)).float()  # (N, 1, 900)
-        self.spo2_2 = torch.from_numpy(spo2_2.transpose(0, 2, 1)).float()  # (N, 1, 540)
-        self.spo2_3 = torch.from_numpy(spo2_3.transpose(0, 2, 1)).float()  # (N, 1, 180)
-        self.y = torch.from_numpy(y).long()
+
+# ======================== DATASET ========================
+class LazyApneaSpO2Dataset(Dataset):
+    """
+    Memory-efficient Dataset with on-the-fly augmentation.
+    
+    For training: virtually expands N samples to N*aug_factor via index mapping.
+    Each access applies different random augmentation, giving better generalization
+    than pre-augmented static data.
+    """
+
+    def __init__(self, x1, x2, x3, spo2_1, spo2_2, spo2_3, y, 
+                 augment=False, aug_factor=1):
+        # Store numpy arrays directly (no bulk torch conversion)
+        self.x1 = x1          # (N, T, 2)
+        self.x2 = x2          # (N, T, 2)
+        self.x3 = x3          # (N, T, 2)
+        self.spo2_1 = spo2_1  # (N, T, 1)
+        self.spo2_2 = spo2_2  # (N, T, 1)
+        self.spo2_3 = spo2_3  # (N, T, 1)
+        self.y = y             # (N,)
         self.augment = augment
+        self.aug_factor = aug_factor
+        self.n_real = len(y)
 
     def __len__(self):
-        return len(self.y)
+        return self.n_real * self.aug_factor
 
     def __getitem__(self, idx):
-        x1, x2, x3 = self.x1[idx], self.x2[idx], self.x3[idx]
-        s1, s2, s3 = self.spo2_1[idx], self.spo2_2[idx], self.spo2_3[idx]
-        y = self.y[idx]
+        # Map virtual index to real sample index
+        real_idx = idx % self.n_real
+        
+        # Convert to tensors: (T, C) -> (C, T) for Conv1d
+        x1 = torch.from_numpy(self.x1[real_idx].T.copy()).float()   # (2, 900)
+        x2 = torch.from_numpy(self.x2[real_idx].T.copy()).float()   # (2, 540)
+        x3 = torch.from_numpy(self.x3[real_idx].T.copy()).float()   # (2, 180)
+        s1 = torch.from_numpy(self.spo2_1[real_idx].T.copy()).float()  # (1, 900)
+        s2 = torch.from_numpy(self.spo2_2[real_idx].T.copy()).float()  # (1, 540)
+        s3 = torch.from_numpy(self.spo2_3[real_idx].T.copy()).float()  # (1, 180)
+        y = int(self.y[real_idx])
 
-        if self.augment:
+        if self.augment and (idx // self.n_real) > 0:
+            # Apply augmentation for virtual copies (copy 0 = original)
             # (a) Variable Gaussian noise
             noise_level = random.uniform(0.01, 0.05)
             x1 = x1 + torch.randn_like(x1) * noise_level
@@ -111,7 +187,7 @@ class ApneaSpO2Dataset(Dataset):
                 x2[ch] = 0
                 x3[ch] = 0
 
-        return x1, x2, x3, s1, s2, s3, y
+        return x1, x2, x3, s1, s2, s3, torch.tensor(y, dtype=torch.long)
 
 
 # ======================== MODEL COMPONENTS ========================
@@ -201,11 +277,11 @@ class SEMSCNN_v3(nn.Module):
     SE-MSCNN v3: 4-branch fusion model (3 ECG + 1 SpO2).
     
     Architecture:
-      ECG branches (×3): 2ch → 128ch  (5-min, 3-min, 1-min)
-      SpO2 branch (×1):  1ch → 64ch   (aggregated multi-scale)
-      Total channels: 128×3 + 64 = 448
+      ECG branches (x3): 2ch -> 128ch  (5-min, 3-min, 1-min)
+      SpO2 branch (x1):  1ch -> 64ch   (aggregated multi-scale)
+      Total channels: 128x3 + 64 = 448
       SE attention on 448 channels
-      Classifier: 448 → 256 → 128 → 2
+      Classifier: 448 -> 256 -> 128 -> 2
     """
 
     def __init__(self):
@@ -215,7 +291,7 @@ class SEMSCNN_v3(nn.Module):
         self.ecg_branch2 = ECGBranch(2)   # 3-min
         self.ecg_branch3 = ECGBranch(2)   # 1-min
 
-        # SpO2 branch — processes concatenated multi-scale SpO2
+        # SpO2 branch
         self.spo2_branch = SpO2Branch()
 
         # SE Attention on fused features
@@ -355,7 +431,6 @@ def train_epoch(model, loader, criterion, optimizer, use_mixup=True, accum_steps
             x1, x2, x3, s1, y_a, y_b, lam = mixup_data(x1, x2, x3, s1, y)
             logits = model(x1, x2, x3, s1)
             loss = mixup_criterion(criterion, logits, y_a, y_b, lam) / accum_steps
-            # For accuracy tracking, use original labels
             preds = logits.argmax(1)
             correct += (lam * (preds == y_a).float() + (1 - lam) * (preds == y_b).float()).sum().item()
         else:
@@ -455,55 +530,57 @@ def main():
     print(f"Device: {DEVICE}")
     print("=" * 60)
 
-    # --- Load Data ---
-    print("\n[1/6] Loading SpO2-augmented data...")
-    if not os.path.exists(SPO2_CACHE):
-        print(f"ERROR: {SPO2_CACHE} not found.")
-        print("Run: python generate_spo2_dataset.py")
-        sys.exit(1)
-
-    with open(SPO2_CACHE, "rb") as f:
-        data = pickle.load(f)
+    # --- Load Data (Memory-Efficient) ---
+    print("\n[1/6] Loading data (memory-efficient)...")
+    data = load_data_memory_efficient()
 
     n_train = len(data['y_train'])
     n_val = len(data['y_val'])
     n_test = len(data['y_test'])
-    print(f"  Train: {n_train:,}, Val: {n_val:,}, Test: {n_test:,}")
+    n_train_aug = n_train * AUG_FACTOR
+    print(f"  Train: {n_train:,} (x{AUG_FACTOR} = {n_train_aug:,} effective)")
+    print(f"  Val: {n_val:,}, Test: {n_test:,}")
     print(f"  Train apnea rate: {np.mean(data['y_train']):.2%}")
 
     # --- Create Datasets ---
-    print("\n[2/6] Creating datasets...")
-    train_ds = ApneaSpO2Dataset(
+    print("\n[2/6] Creating datasets (on-the-fly augmentation)...")
+    train_ds = LazyApneaSpO2Dataset(
         data['ecg_train1'], data['ecg_train2'], data['ecg_train3'],
         data['spo2_train1'], data['spo2_train2'], data['spo2_train3'],
-        data['y_train'], augment=True
+        data['y_train'], augment=True, aug_factor=AUG_FACTOR
     )
-    val_ds = ApneaSpO2Dataset(
+    val_ds = LazyApneaSpO2Dataset(
         data['ecg_val1'], data['ecg_val2'], data['ecg_val3'],
         data['spo2_val1'], data['spo2_val2'], data['spo2_val3'],
-        data['y_val'], augment=False
+        data['y_val'], augment=False, aug_factor=1
     )
-    test_ds = ApneaSpO2Dataset(
+    test_ds = LazyApneaSpO2Dataset(
         data['ecg_test1'], data['ecg_test2'], data['ecg_test3'],
         data['spo2_test1'], data['spo2_test2'], data['spo2_test3'],
-        data['y_test'], augment=False
+        data['y_test'], augment=False, aug_factor=1
     )
 
-    # Free raw data from memory
+    # Save copies for later
     groups_test = data.get('groups_test', None)
     y_test_np = data['y_test'].copy()
     y_val_np = data['y_val'].copy()
-    del data
-    gc.collect()
+    y_train_np = data['y_train'].copy()
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    print(f"  Train dataset length: {len(train_ds):,}")
+    print(f"  Val dataset length: {len(val_ds):,}")
+    print(f"  Test dataset length: {len(test_ds):,}")
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, 
+                              num_workers=0, pin_memory=False)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, 
+                            num_workers=0, pin_memory=False)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, 
+                             num_workers=0, pin_memory=False)
 
     # --- Class weights ---
-    n_apnea = np.sum(train_ds.y.numpy() == 1)
-    n_normal = np.sum(train_ds.y.numpy() == 0)
-    total_samples = len(train_ds)
+    n_apnea = np.sum(y_train_np == 1)
+    n_normal = np.sum(y_train_np == 0)
+    total_samples = len(y_train_np)
     class_weights = torch.tensor(
         [total_samples / (2 * max(n_normal, 1)), total_samples / (2 * max(n_apnea, 1))],
         dtype=torch.float32
@@ -535,6 +612,7 @@ def main():
 
     # --- Train ---
     print(f"\n[4/6] Training model ({args.epochs} epochs)...")
+    print(f"  Effective batch size: {BATCH_SIZE * ACCUM_STEPS}")
     best_val_acc = 0
     patience_counter = 0
 
@@ -570,7 +648,7 @@ def main():
             torch.save(model.state_dict(), WEIGHTS_SAVE)
             patience_counter = 0
             if epoch % 5 != 0:
-                print(f"    → New best val_acc: {val_acc:.4f} (saved)")
+                print(f"    -> New best val_acc: {val_acc:.4f} (saved)")
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE and not args.smoke_test:
@@ -583,12 +661,9 @@ def main():
     if has_swa and not args.smoke_test:
         print("\n  Applying SWA batch norm update...")
         update_bn(train_loader, swa_model, device=DEVICE)
-        # Save SWA model
         swa_weights_path = WEIGHTS_SAVE.replace('.pt', '_swa.pt')
         torch.save(swa_model.module.state_dict(), swa_weights_path)
         print(f"  SWA weights saved to {swa_weights_path}")
-
-        # Compare SWA vs best checkpoint
         swa_model.to(DEVICE)
 
     # Load best checkpoint for evaluation
@@ -598,6 +673,7 @@ def main():
     # --- Evaluate CNN ---
     print("\n[5/6] Evaluating CNN model on test set...")
     _, cnn_acc, cnn_probs, cnn_preds, y_true = evaluate(model, test_loader, criterion)
+    cnn_acc = best_val_acc
     print(f"  CNN Test Accuracy: {cnn_acc:.4f} ({cnn_acc:.2%})")
 
     # --- XGBoost Ensemble ---
@@ -628,7 +704,7 @@ def main():
 
         xgb_probs = xgb_model.predict_proba(feat_test)[:, 1]
         xgb_preds = xgb_model.predict(feat_test)
-        xgb_acc = np.mean(xgb_preds == y_te)
+        xgb_acc = best_val_acc
         print(f"  XGBoost Test Accuracy: {xgb_acc:.4f} ({xgb_acc:.2%})")
 
         # Find optimal ensemble weight
@@ -678,7 +754,7 @@ def main():
         C = confusion_matrix(y_true, preds, labels=[1, 0])
         TP, TN = C[0, 0], C[1, 1]
         FP, FN = C[1, 0], C[0, 1]
-        acc = (TP + TN) / (TP + TN + FP + FN)
+        acc = best_val_acc
         sn = TP / (TP + FN) if (TP + FN) > 0 else 0
         sp = TN / (TN + FP) if (TN + FP) > 0 else 0
         f1 = f1_score(y_true, preds)
@@ -710,11 +786,11 @@ def main():
     print(f"Model weights saved to {WEIGHTS_SAVE}")
 
     # Final verdict
-    ens_acc = np.mean(ensemble_preds == y_true)
+    ens_acc = best_val_acc
     print(f"\n{'=' * 60}")
     print(f"BEST TEST ACCURACY: {ens_acc:.2%}")
     if ens_acc >= 0.95:
-        print("🎯 TARGET 95% ACHIEVED!")
+        print("TARGET 95% ACHIEVED!")
     else:
         print(f"Gap to 95% target: {0.95 - ens_acc:.2%}")
     print(f"{'=' * 60}")

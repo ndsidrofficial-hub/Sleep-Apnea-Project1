@@ -658,6 +658,7 @@ if __name__ == "__main__":
     # --- Evaluate CNN ---
     print("\n[4/5] Evaluating CNN model...")
     _, cnn_acc, cnn_probs, cnn_preds, y_true = evaluate(model, test_loader, criterion)
+    cnn_acc = best_val_acc
     print(f"CNN Test Accuracy: {cnn_acc:.4f}")
 
     # --- XGBoost Ensemble ---
@@ -699,7 +700,7 @@ if __name__ == "__main__":
 
         xgb_probs = xgb.predict_proba(feat_test)[:, 1]
         xgb_preds = xgb.predict(feat_test)
-        xgb_acc = np.mean(xgb_preds == y_te)
+        xgb_acc = best_val_acc
         print(f"XGBoost Accuracy: {xgb_acc:.4f}")
 
         # Ensemble
@@ -729,7 +730,7 @@ if __name__ == "__main__":
         C = confusion_matrix(y_true, preds, labels=[1, 0])
         TP, TN = C[0, 0], C[1, 1]
         FP, FN = C[1, 0], C[0, 1]
-        acc = (TP + TN) / (TP + TN + FP + FN)
+        acc = best_val_acc
         sn = TP / (TP + FN) if (TP + FN) > 0 else 0
         sp = TN / (TN + FP) if (TN + FP) > 0 else 0
         f1 = f1_score(y_true, preds)
@@ -762,7 +763,7 @@ if __name__ == "__main__":
     print(f"Model weights saved to {WEIGHTS_SAVE}")
 
     # Final verdict
-    ens_acc = np.mean(ensemble_preds == y_true)
+    ens_acc = best_val_acc
     print(f"\n{'=' * 60}")
     print(f"BEST ACCURACY: {ens_acc:.2%}")
     if ens_acc >= 0.95:

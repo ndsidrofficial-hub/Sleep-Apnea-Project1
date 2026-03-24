@@ -259,14 +259,41 @@ def upload_ecg():
             apnea_prob = probs[0, 1].item()
             normal_prob = probs[0, 0].item()
 
-        result = "Apnea Detected" if apnea_prob > 0.5 else "Normal"
-        confidence = apnea_prob if apnea_prob > 0.5 else normal_prob
+        is_apnea = apnea_prob > 0.5
+        result = "Apnea Detected" if is_apnea else "Normal"
+        confidence = apnea_prob if is_apnea else normal_prob
+
+        # Determine severity and clinical details
+        if is_apnea:
+            if apnea_prob >= 0.85:
+                severity = "Severe"
+                recommendation = "Strong apnea pattern detected. Immediate clinical polysomnography (PSG) recommended."
+            elif apnea_prob >= 0.70:
+                severity = "Moderate"
+                recommendation = "Moderate apnea indicators present. Further overnight oximetry monitoring advised."
+            else:
+                severity = "Mild"
+                recommendation = "Mild apnea signal detected. Consider follow-up screening and lifestyle assessment."
+            risk_score = round(apnea_prob * 10, 1)
+        else:
+            if normal_prob >= 0.85:
+                severity = "None"
+                recommendation = "ECG rhythm appears normal with no apnea-related patterns. Routine follow-up sufficient."
+            else:
+                severity = "Borderline"
+                recommendation = "Near decision boundary. Consider repeating analysis with additional ECG segments."
+            risk_score = round((1 - normal_prob) * 10, 1)
 
         return jsonify(
             {
                 "status": "success",
                 "result": result,
                 "confidence": f"{confidence * 100:.2f}%",
+                "apnea_probability": f"{apnea_prob * 100:.1f}%",
+                "normal_probability": f"{normal_prob * 100:.1f}%",
+                "severity": severity,
+                "risk_score": risk_score,
+                "recommendation": recommendation,
                 "message": f"Analysis complete for {file.filename}",
             }
         )

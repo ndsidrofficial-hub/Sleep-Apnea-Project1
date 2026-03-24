@@ -1,6 +1,7 @@
 """
 SE-MSCNN v3 Benchmark — Sleep Apnea Detection with SpO2 Fusion
 ==============================================================
+Memory-efficient: loads ECG from preprocessed_data.pkl + SpO2 from spo2_npy/
 Benchmarks the trained v3 model and compares against v2 baseline.
 """
 
@@ -9,15 +10,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import xgboost as xgb
-from sklearn.metrics import (
-    confusion_matrix, roc_curve, auc, classification_report, f1_score
-)
-import matplotlib.pyplot as plt
-import seaborn as sns
 import time
 import os
 import sys
+import gc
+
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
+
+from sklearn.metrics import (
+    confusion_matrix, roc_curve, auc, classification_report, f1_score
+)
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SPO2_DIR = os.path.join(BASE_DIR, "spo2_npy")
+PICKLE_CACHE = os.path.join(BASE_DIR, "preprocessed_data.pkl")
 
 
 # ======================== MODEL (must match SE_MSCNN_v3_spo2.py) ========================
@@ -215,6 +229,45 @@ class ImprovedSEMSCNN(nn.Module):
         return logits
 
 
+# ======================== DATA LOADING ========================
+def load_data_memory_efficient():
+    """Load ECG from preprocessed_data.pkl + SpO2 from spo2_npy/."""
+    print("  Loading ECG from preprocessed_data.pkl...")
+    if not os.path.exists(PICKLE_CACHE):
+        print(f"ERROR: {PICKLE_CACHE} not found.")
+        sys.exit(1)
+    
+    with open(PICKLE_CACHE, "rb") as f:
+        ecg_data = pickle.load(f)
+    
+    print("  Loading SpO2 from spo2_npy/...")
+    if not os.path.exists(SPO2_DIR):
+        print(f"ERROR: {SPO2_DIR} not found. Run: python generate_spo2_dataset.py")
+        sys.exit(1)
+    
+    data = {
+        'ecg_train1': ecg_data['x_train1'],
+        'ecg_train2': ecg_data['x_train2'],
+        'ecg_train3': ecg_data['x_train3'],
+        'ecg_val1': ecg_data['x_val1'],
+        'ecg_val2': ecg_data['x_val2'],
+        'ecg_val3': ecg_data['x_val3'],
+        'ecg_test1': ecg_data['x_test1'],
+        'ecg_test2': ecg_data['x_test2'],
+        'ecg_test3': ecg_data['x_test3'],
+        'y_train': ecg_data['y_train'],
+        'y_val': ecg_data['y_val'],
+        'y_test': ecg_data['y_test'],
+        'spo2_train1': np.load(os.path.join(SPO2_DIR, "train_spo2_1.npy")),
+        'spo2_test1': np.load(os.path.join(SPO2_DIR, "test_spo2_1.npy")),
+    }
+    
+    del ecg_data
+    gc.collect()
+    
+    return data
+
+
 # ======================== BENCHMARK ========================
 def run_benchmark():
     print("=" * 70)
@@ -226,20 +279,14 @@ def run_benchmark():
     batch_size = 256
 
     # --- Load data ---
-    print("\nLoading test data...")
-
-    spo2_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spo2_data.pkl")
-    if not os.path.exists(spo2_path):
-        print(f"ERROR: {spo2_path} not found. Run generate_spo2_dataset.py first.")
-        sys.exit(1)
-
-    with open(spo2_path, "rb") as f:
-        data = pickle.load(f)
+    print("\nLoading data (memory-efficient)...")
+    data = load_data_memory_efficient()
 
     y_test = data["y_test"]
     y_train = data["y_train"]
     n_test = len(y_test)
-    print(f"[Dataset] Train: {len(y_train)}, Val: {len(data['y_val'])}, Test: {n_test}")
+    n_train = len(y_train)
+    print(f"[Dataset] Train: {n_train}, Val: {len(data['y_val'])}, Test: {n_test}")
 
     # Prepare test tensors
     ecg_test1 = torch.FloatTensor(data["ecg_test1"]).transpose(1, 2).to(device)
@@ -250,7 +297,7 @@ def run_benchmark():
     # ============================
     # v3 Model Benchmark
     # ============================
-    v3_weights = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights.v3_spo2.pt")
+    v3_weights = os.path.join(BASE_DIR, "weights.v3_spo2.pt")
     if not os.path.exists(v3_weights):
         print(f"\nERROR: {v3_weights} not found. Run SE_MSCNN_v3_spo2.py first.")
         sys.exit(1)
@@ -282,41 +329,47 @@ def run_benchmark():
     v3_features_test = np.vstack(v3_features_test)
 
     # XGBoost ensemble for v3
-    print("Training XGBoost ensemble for v3...")
-    ecg_train1 = torch.FloatTensor(data["ecg_train1"]).transpose(1, 2).to(device)
-    ecg_train2 = torch.FloatTensor(data["ecg_train2"]).transpose(1, 2).to(device)
-    ecg_train3 = torch.FloatTensor(data["ecg_train3"]).transpose(1, 2).to(device)
-    spo2_train = torch.FloatTensor(data["spo2_train1"]).transpose(1, 2).to(device)
+    if HAS_XGB:
+        print("Training XGBoost ensemble for v3...")
+        ecg_train1 = torch.FloatTensor(data["ecg_train1"]).transpose(1, 2).to(device)
+        ecg_train2 = torch.FloatTensor(data["ecg_train2"]).transpose(1, 2).to(device)
+        ecg_train3 = torch.FloatTensor(data["ecg_train3"]).transpose(1, 2).to(device)
+        spo2_train = torch.FloatTensor(data["spo2_train1"]).transpose(1, 2).to(device)
 
-    v3_features_train = []
-    with torch.no_grad():
-        for i in range(0, len(y_train), batch_size):
-            b1 = ecg_train1[i:i+batch_size]
-            b2 = ecg_train2[i:i+batch_size]
-            b3 = ecg_train3[i:i+batch_size]
-            s1 = spo2_train[i:i+batch_size]
-            _, features = model_v3(b1, b2, b3, s1, return_features=True)
-            v3_features_train.append(features.cpu().numpy())
+        v3_features_train = []
+        with torch.no_grad():
+            for i in range(0, n_train, batch_size):
+                b1 = ecg_train1[i:i+batch_size]
+                b2 = ecg_train2[i:i+batch_size]
+                b3 = ecg_train3[i:i+batch_size]
+                s1 = spo2_train[i:i+batch_size]
+                _, features = model_v3(b1, b2, b3, s1, return_features=True)
+                v3_features_train.append(features.cpu().numpy())
 
-    v3_features_train = np.vstack(v3_features_train)
+        v3_features_train = np.vstack(v3_features_train)
+        del ecg_train1, ecg_train2, ecg_train3, spo2_train
+        gc.collect()
 
-    xgb_v3 = xgb.XGBClassifier(
-        n_estimators=500, max_depth=6, learning_rate=0.05,
-        n_jobs=1, random_state=42
-    )
-    xgb_v3.fit(v3_features_train, y_train)
-    v3_xgb_probs = xgb_v3.predict_proba(v3_features_test)[:, 1]
+        xgb_v3 = xgb.XGBClassifier(
+            n_estimators=500, max_depth=6, learning_rate=0.05,
+            n_jobs=1, random_state=42
+        )
+        xgb_v3.fit(v3_features_train, y_train)
+        v3_xgb_probs = xgb_v3.predict_proba(v3_features_test)[:, 1]
 
-    # Optimized ensemble
-    best_alpha, best_acc = 0.5, 0
-    for alpha in np.arange(0.1, 0.95, 0.05):
-        probs = alpha * v3_cnn_probs + (1 - alpha) * v3_xgb_probs
-        preds = (probs >= 0.5).astype(int)
-        acc = np.mean(preds == y_test)
-        if acc > best_acc:
-            best_alpha, best_acc = alpha, acc
+        # Optimized ensemble
+        best_alpha, best_acc = 0.5, 0
+        for alpha in np.arange(0.1, 0.95, 0.05):
+            probs = alpha * v3_cnn_probs + (1 - alpha) * v3_xgb_probs
+            preds = (probs >= 0.5).astype(int)
+            acc = np.mean(preds == y_test)
+            if acc > best_acc:
+                best_alpha, best_acc = alpha, acc
 
-    v3_ensemble_probs = best_alpha * v3_cnn_probs + (1 - best_alpha) * v3_xgb_probs
+        v3_ensemble_probs = best_alpha * v3_cnn_probs + (1 - best_alpha) * v3_xgb_probs
+    else:
+        print("XGBoost not available, using CNN-only predictions.")
+        v3_ensemble_probs = v3_cnn_probs
 
     # Optimize threshold
     best_thr, _ = 0.5, 0
@@ -328,14 +381,10 @@ def run_benchmark():
 
     v3_ensemble_preds = (v3_ensemble_probs >= best_thr).astype(int)
 
-    # Free GPU memory
-    del ecg_train1, ecg_train2, ecg_train3, spo2_train
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
     # ============================
     # v2 Model Benchmark (comparison)
     # ============================
-    v2_weights = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights.v2_improved.pt")
+    v2_weights = os.path.join(BASE_DIR, "weights.v2_improved.pt")
     v2_results = None
 
     if os.path.exists(v2_weights):
@@ -362,19 +411,15 @@ def run_benchmark():
         v2_cnn_probs = np.array(v2_cnn_probs)
         v2_features_test = np.vstack(v2_features_test)
 
-        # Load original data for v2 XGBoost
-        orig_data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preprocessed_data.pkl")
-        if os.path.exists(orig_data_path):
-            with open(orig_data_path, "rb") as f:
-                orig_data = pickle.load(f)
-
-            orig_train1 = torch.FloatTensor(orig_data["x_train1"]).transpose(1, 2).to(device)
-            orig_train2 = torch.FloatTensor(orig_data["x_train2"]).transpose(1, 2).to(device)
-            orig_train3 = torch.FloatTensor(orig_data["x_train3"]).transpose(1, 2).to(device)
+        # XGBoost for v2
+        if HAS_XGB:
+            orig_train1 = torch.FloatTensor(data["ecg_train1"]).transpose(1, 2).to(device)
+            orig_train2 = torch.FloatTensor(data["ecg_train2"]).transpose(1, 2).to(device)
+            orig_train3 = torch.FloatTensor(data["ecg_train3"]).transpose(1, 2).to(device)
 
             v2_features_train = []
             with torch.no_grad():
-                for i in range(0, len(orig_data["y_train"]), batch_size):
+                for i in range(0, n_train, batch_size):
                     b1 = orig_train1[i:i+batch_size]
                     b2 = orig_train2[i:i+batch_size]
                     b3 = orig_train3[i:i+batch_size]
@@ -383,16 +428,16 @@ def run_benchmark():
 
             v2_features_train = np.vstack(v2_features_train)
             del orig_train1, orig_train2, orig_train3
+            gc.collect()
 
             xgb_v2 = xgb.XGBClassifier(
                 n_estimators=500, max_depth=6, learning_rate=0.05,
                 n_jobs=1, random_state=42
             )
-            xgb_v2.fit(v2_features_train, orig_data["y_train"])
+            xgb_v2.fit(v2_features_train, y_train)
             v2_xgb_probs = xgb_v2.predict_proba(v2_features_test)[:, 1]
             v2_ensemble_probs = 0.5 * v2_cnn_probs + 0.5 * v2_xgb_probs
             v2_ensemble_preds = (v2_ensemble_probs >= 0.5).astype(int)
-            del orig_data
         else:
             v2_ensemble_probs = v2_cnn_probs
             v2_ensemble_preds = (v2_cnn_probs >= 0.5).astype(int)
@@ -402,6 +447,8 @@ def run_benchmark():
             'probs': v2_ensemble_probs,
             'params': v2_params,
         }
+    else:
+        print(f"\nv2 weights not found ({v2_weights}), skipping v2 comparison.")
 
     end_time = time.time()
 
@@ -442,10 +489,10 @@ def run_benchmark():
         )
 
         print(f"\n{'=' * 70}")
-        print(f"  IMPROVEMENT: v2 → v3")
-        print(f"  Accuracy:  {v2_acc*100:.2f}% → {v3_acc*100:.2f}% ({(v3_acc-v2_acc)*100:+.2f}%)")
-        print(f"  AUC-ROC:   {v2_auc:.4f} → {v3_auc:.4f} ({v3_auc-v2_auc:+.4f})")
-        print(f"  Parameters: {v2_results['params']:,} → {v3_params:,}")
+        print(f"  IMPROVEMENT: v2 -> v3")
+        print(f"  Accuracy:  {v2_acc*100:.2f}% -> {v3_acc*100:.2f}% ({(v3_acc-v2_acc)*100:+.2f}%)")
+        print(f"  AUC-ROC:   {v2_auc:.4f} -> {v3_auc:.4f} ({v3_auc-v2_auc:+.4f})")
+        print(f"  Parameters: {v2_results['params']:,} -> {v3_params:,}")
         print(f"{'=' * 70}")
 
     # ============================
@@ -456,21 +503,18 @@ def run_benchmark():
     if v2_results:
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-        # v3 Confusion Matrix
         sns.heatmap(v3_cm, annot=True, fmt="d", cmap="Blues", ax=axes[0, 0],
                     xticklabels=["Normal", "Apnea"], yticklabels=["Normal", "Apnea"])
         axes[0, 0].set_title(f"v3 Confusion Matrix (Acc: {v3_acc*100:.2f}%)", fontsize=13)
         axes[0, 0].set_ylabel("True Label")
         axes[0, 0].set_xlabel("Predicted Label")
 
-        # v2 Confusion Matrix
         sns.heatmap(v2_cm, annot=True, fmt="d", cmap="Oranges", ax=axes[0, 1],
                     xticklabels=["Normal", "Apnea"], yticklabels=["Normal", "Apnea"])
         axes[0, 1].set_title(f"v2 Confusion Matrix (Acc: {v2_acc*100:.2f}%)", fontsize=13)
         axes[0, 1].set_ylabel("True Label")
         axes[0, 1].set_xlabel("Predicted Label")
 
-        # ROC Curves
         v3_fpr, v3_tpr, _ = roc_curve(y_test, v3_ensemble_probs)
         v2_fpr, v2_tpr, _ = roc_curve(y_test, v2_results['probs'])
 
@@ -484,15 +528,12 @@ def run_benchmark():
         axes[1, 0].set_title("ROC Comparison (v2 vs v3)", fontsize=13)
         axes[1, 0].legend(loc="lower right")
 
-        # Comparison bar chart
         metrics = ['Accuracy', 'Sensitivity', 'Specificity', 'AUC-ROC']
-        v2_vals = [v2_acc, 0, 0, v2_auc]
-        v3_vals = [v3_acc, v3_sens, v3_spec, v3_auc]
-
-        # Compute v2 sens/spec
         v2_tn, v2_fp, v2_fn, v2_tp = v2_cm.ravel()
-        v2_vals[1] = v2_tp / (v2_tp + v2_fn) if (v2_tp + v2_fn) > 0 else 0
-        v2_vals[2] = v2_tn / (v2_tn + v2_fp) if (v2_tn + v2_fp) > 0 else 0
+        v2_sens = v2_tp / (v2_tp + v2_fn) if (v2_tp + v2_fn) > 0 else 0
+        v2_spec = v2_tn / (v2_tn + v2_fp) if (v2_tn + v2_fp) > 0 else 0
+        v2_vals = [v2_acc, v2_sens, v2_spec, v2_auc]
+        v3_vals = [v3_acc, v3_sens, v3_spec, v3_auc]
 
         x = np.arange(len(metrics))
         width = 0.35
@@ -507,7 +548,6 @@ def run_benchmark():
         axes[1, 1].legend()
         axes[1, 1].set_ylim(80, 100)
 
-        # Add value labels on bars
         for bar in bars1:
             h = bar.get_height()
             axes[1, 1].annotate(f'{h:.1f}%', xy=(bar.get_x() + bar.get_width()/2, h),
@@ -535,13 +575,13 @@ def run_benchmark():
         axes[1].legend(loc="lower right")
 
     plt.tight_layout()
-    plt.savefig("benchmark_v3_plot.png", dpi=300)
+    plt.savefig(os.path.join(BASE_DIR, "benchmark_v3_plot.png"), dpi=300)
     print(f"\nPlot saved as benchmark_v3_plot.png")
 
     # Final verdict
     print(f"\n{'=' * 70}")
     if v3_acc >= 0.95:
-        print(f"🎯 TARGET ACHIEVED! Test Accuracy: {v3_acc*100:.2f}%")
+        print(f"TARGET ACHIEVED! Test Accuracy: {v3_acc*100:.2f}%")
     else:
         print(f"Test Accuracy: {v3_acc*100:.2f}% (gap to 95%: {(0.95-v3_acc)*100:.2f}%)")
     print(f"{'=' * 70}")
